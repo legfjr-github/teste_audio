@@ -2,29 +2,25 @@ import streamlit as st
 from spleeter.separator import Separator
 import os
 import tempfile
-import gc  # Importamos o Garbage Collector para limpar memória na marra
+import gc 
 
-# Configuração da página para evitar recarregamentos desnecessários
 st.set_page_config(page_title="Separador de Áudio", layout="centered")
 
 st.title("Separador de Áudio IA (Versão Leve) 🎵")
 st.write("Faça upload de uma música para separar voz e instrumentos.")
 
 st.sidebar.header("Configurações")
-# Opção para limitar a duração e economizar RAM
 duracao_max = st.sidebar.slider("Limitar duração (segundos)", 30, 300, 60, help="Diminua se o app travar.")
-stems = st.sidebar.selectbox("Tipo de separação", ["2 stems (Voz + Música)"]) # Removi 4 stems pois é muito pesado pro free tier
+stems = st.sidebar.selectbox("Tipo de separação", ["2 stems (Voz + Música)"]) 
 
-# Função para carregar o modelo
 @st.cache_resource
 def load_separator():
-    # O SEGREDO ESTÁ AQUI: multiprocess=False
-    # Isso impede que o Spleeter crie subprocessos que estouram a RAM do Streamlit
+    # multiprocess=False é crucial para não estourar a memória
     return Separator('spleeter:2stems', multiprocess=False)
 
 try:
     separator = load_separator()
-    st.success("Modelo IA carregado em modo de economia de memória!")
+    st.success("Modelo IA carregado!")
 except Exception as e:
     st.error(f"Erro ao carregar modelo: {e}")
 
@@ -32,28 +28,27 @@ uploaded_file = st.file_uploader("Escolha um arquivo mp3/wav/m4a", type=["mp3", 
 
 if uploaded_file is not None:
     if st.button("Separar Áudio"):
-        # Barra de progresso para feedback visual
         progress_bar = st.progress(0)
         status_text = st.empty()
         
         try:
-            with st.spinner('Processando... (Isso usa muita CPU, aguarde)'):
-                status_text.text("Preparando arquivos...")
-                
-                # Limpeza de memória antes de começar
-                gc.collect()
+            with st.spinner('Processando...'):
+                gc.collect() # Limpa memória
 
                 with tempfile.TemporaryDirectory() as temp_dir:
-                    # Salva arquivo de entrada
-                    temp_audio_path = os.path.join(temp_dir, "input_audio")
+                    # --- MUDANÇA AQUI ---
+                    # Damos um nome fixo com extensão .mp3 para evitar conflito de pasta
+                    input_filename = "song.mp3"
+                    temp_audio_path = os.path.join(temp_dir, input_filename)
+                    
+                    # Salva o arquivo
                     with open(temp_audio_path, "wb") as f:
                         f.write(uploaded_file.getbuffer())
                     
-                    status_text.text("Separando faixas com IA...")
+                    status_text.text("Separando faixas...")
                     progress_bar.progress(30)
                     
                     # Executa a separação
-                    # Adicionei o parametro 'duration' controlado pelo slider
                     separator.separate_to_file(
                         temp_audio_path, 
                         temp_dir, 
@@ -65,15 +60,18 @@ if uploaded_file is not None:
                     progress_bar.progress(80)
                     status_text.text("Finalizando...")
 
-                    # Caminhos dos arquivos gerados
-                    output_folder = os.path.join(temp_dir, "input_audio")
+                    # --- AJUSTE NOS CAMINHOS ---
+                    # O Spleeter cria uma pasta com o nome do arquivo (sem extensão)
+                    # Como o arquivo chama "song.mp3", a pasta será "song"
+                    output_folder = os.path.join(temp_dir, "song")
+                    
                     path_vocals = os.path.join(output_folder, "vocals.mp3")
                     path_music = os.path.join(output_folder, "accompaniment.mp3")
 
                     st.write("---")
                     col1, col2 = st.columns(2)
                     
-                    # Exibe resultados
+                    # Verifica e exibe
                     if os.path.exists(path_vocals):
                         with col1:
                             st.subheader("🎤 Voz")
@@ -93,8 +91,6 @@ if uploaded_file is not None:
                     
         except Exception as e:
             st.error(f"Ocorreu um erro: {e}")
-            st.warning("Se o app reiniciou, o arquivo era muito pesado para o servidor gratuito.")
         
         finally:
-            # Limpeza final de memória
             gc.collect()
