@@ -6,9 +6,9 @@ import gc
 from pydub import AudioSegment
 import shutil
 from io import BytesIO
+import zipfile  # <--- Biblioteca para criar o ZIP
 
-# --- CORREÇÃO DO Pydub ---
-# Força o Pydub a encontrar os executáveis do sistema
+# --- CONFIGURAÇÃO INICIAL ---
 path_to_ffmpeg = shutil.which("ffmpeg") 
 path_to_ffprobe = shutil.which("ffprobe")
 
@@ -20,65 +20,60 @@ if path_to_ffprobe:
 st.set_page_config(page_title="Separador de Áudio", layout="centered")
 
 st.title("Separador de Áudio (Modo Segmentado) ✂️")
-st.write("Processa músicas longas cortando em pedaços para economizar memória.")
+st.write("Processa músicas longas e mantém os arquivos para download.")
+
+# --- SESSION STATE (A MÁGICA PARA NÃO SUMIR) ---
+if 'vocals_buffer' not in st.session_state:
+    st.session_state.vocals_buffer = None
+if 'music_buffer' not in st.session_state:
+    st.session_state.music_buffer = None
+if 'processed' not in st.session_state:
+    st.session_state.processed = False
 
 # Configurações
 st.sidebar.header("Configurações")
-stems = st.sidebar.selectbox("Tipo de separação", ["2 stems (Voz + Música)"])
-chunk_len_sec = st.sidebar.slider("Tamanho do pedaço (seg)", 30, 60, 60, help="60s é o ideal. Se travar, diminua.")
+chunk_len_sec = st.sidebar.slider("Tamanho do pedaço (seg)", 30, 60, 60)
 
 @st.cache_resource
 def load_separator():
-    # multiprocess=False continua sendo essencial
     return Separator('spleeter:2stems', multiprocess=False)
 
 try:
     separator = load_separator()
-    st.success("Modelo IA carregado!")
+    st.success("IA carregada!")
 except Exception as e:
-    st.error(f"Erro ao carregar modelo: {e}")
+    st.error(f"Erro IA: {e}")
 
 uploaded_file = st.file_uploader("Escolha um arquivo mp3/wav/m4a", type=["mp3", "wav", "m4a"])
 
+# --- BOTÃO DE PROCESSAMENTO ---
 if uploaded_file is not None:
+    # Só mostra o botão se ainda não tiver processado ou se quiser fazer de novo
     if st.button("Separar Áudio Completo"):
         progress_bar = st.progress(0)
         status_text = st.empty()
         
         try:
-            with st.spinner('Lendo arquivo original...'):
-                # Carrega o áudio completo usando Pydub
+            with st.spinner('Lendo arquivo...'):
                 original_audio = AudioSegment.from_file(uploaded_file)
-                
-                # Calcula quantos pedaços teremos
                 chunk_length_ms = chunk_len_sec * 1000
                 chunks = [original_audio[i:i + chunk_length_ms] for i in range(0, len(original_audio), chunk_length_ms)]
                 total_chunks = len(chunks)
                 
-                status_text.text(f"Áudio dividido em {total_chunks} partes. Iniciando processamento...")
-                
-                # Listas para guardar os pedaços processados
                 combined_vocals = AudioSegment.empty()
                 combined_music = AudioSegment.empty()
 
-                # Diretório temporário mestre
                 with tempfile.TemporaryDirectory() as master_temp_dir:
-                    
                     for i, chunk in enumerate(chunks):
-                        gc.collect() # Limpa memória antes de cada loop
-                        
+                        gc.collect()
                         step_percent = int((i / total_chunks) * 100)
                         progress_bar.progress(step_percent)
-                        status_text.text(f"Processando parte {i+1} de {total_chunks}...")
+                        status_text.text(f"Processando parte {i+1}/{total_chunks}...")
 
-                        # 1. Salva o pedaço atual num arquivo temporário
                         chunk_filename = f"chunk_{i}.mp3"
                         chunk_path = os.path.join(master_temp_dir, chunk_filename)
-                        
-                        # Exporta o pedaço para o disco
                         chunk.export(chunk_path, format="mp3")
                         
-                        # 2. Roda o Spleeter neste pedaço
                         try:
                             separator.separate_to_file(
                                 chunk_path, 
@@ -86,64 +81,95 @@ if uploaded_file is not None:
                                 codec='mp3', 
                                 bitrate='128k'
                             )
-                        except Exception as sep_error:
-                            # Se der erro em um pedaço, tenta pular ou avisa
-                            print(f"Erro no chunk {i}: {sep_error}")
+                        except Exception as e:
+                            print(f"Erro chunk {i}: {e}")
                             continue
 
-                        # 3. Recupera os arquivos gerados
-                        chunk_folder_name = f"chunk_{i}"
-                        output_path = os.path.join(master_temp_dir, chunk_folder_name)
+                        chunk_folder = f"chunk_{i}"
+                        out_path = os.path.join(master_temp_dir, chunk_folder)
+                        v_path = os.path.join(out_path, "vocals.mp3")
+                        m_path = os.path.join(out_path, "accompaniment.mp3")
                         
-                        vocals_chunk_path = os.path.join(output_path, "vocals.mp3")
-                        music_chunk_path = os.path.join(output_path, "accompaniment.mp3")
-                        
-                        # 4. Carrega os resultados de volta e adiciona à lista final
-                        if os.path.exists(vocals_chunk_path):
-                            seg_v = AudioSegment.from_mp3(vocals_chunk_path)
-                            combined_vocals += seg_v
-                        
-                        if os.path.exists(music_chunk_path):
-                            seg_m = AudioSegment.from_mp3(music_chunk_path)
-                            combined_music += seg_m
+                        if os.path.exists(v_path):
+                            combined_vocals += AudioSegment.from_mp3(v_path)
+                        if os.path.exists(m_path):
+                            combined_music += AudioSegment.from_mp3(m_path)
                 
-                # Finalização
+                status_text.text("Gerando arquivos finais...")
                 progress_bar.progress(90)
-                status_text.text("Unindo as partes finais...")
                 
-                buffer_voz = BytesIO()
-                combined_vocals.export(buffer_voz, format="mp3", bitrate="192k")
+                # --- SALVA NO SESSION STATE ---
+                # Usamos BytesIO para guardar na memória RAM
+                buf_v = BytesIO()
+                combined_vocals.export(buf_v, format="mp3", bitrate="192k")
+                st.session_state.vocals_buffer = buf_v.getvalue() # Salva os bytes
                 
-                buffer_music = BytesIO()
-                combined_music.export(buffer_music, format="mp3", bitrate="192k")
+                buf_m = BytesIO()
+                combined_music.export(buf_m, format="mp3", bitrate="192k")
+                st.session_state.music_buffer = buf_m.getvalue() # Salva os bytes
+                
+                st.session_state.processed = True
                 
                 progress_bar.progress(100)
-                status_text.text("Processamento concluído!")
-                
-                st.write("---")
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.subheader("🎤 Voz Completa")
-                    st.download_button(
-                        label="Baixar Voz",
-                        data=buffer_voz.getvalue(),
-                        file_name="voz_completa.mp3",
-                        mime="audio/mp3"
-                    )
-                    
-                with col2:
-                    st.subheader("🎸 Música Completa")
-                    st.download_button(
-                        label="Baixar Playback",
-                        data=buffer_music.getvalue(),
-                        file_name="playback_completo.mp3",
-                        mime="audio/mp3"
-                    )
+                status_text.text("Concluído!")
+                # Força recarregar a página para exibir os botões de download
+                st.rerun()
 
         except Exception as e:
-            st.error(f"Erro crítico: {e}")
-            st.warning("Dica: Verifique se o arquivo packages.txt contém 'ffmpeg' no GitHub.")
-            
+            st.error(f"Erro: {e}")
         finally:
             gc.collect()
+
+# --- ÁREA DE DOWNLOAD (FORA DO IF DO BOTÃO) ---
+if st.session_state.processed:
+    st.write("---")
+    st.success("Áudio processado e pronto para download!")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    # Botão 1: Voz
+    with col1:
+        st.subheader("🎤 Voz")
+        st.audio(st.session_state.vocals_buffer, format='audio/mp3')
+        st.download_button(
+            label="Baixar Voz",
+            data=st.session_state.vocals_buffer,
+            file_name="voz_separada.mp3",
+            mime="audio/mp3"
+        )
+        
+    # Botão 2: Música
+    with col2:
+        st.subheader("🎸 Playback")
+        st.audio(st.session_state.music_buffer, format='audio/mp3')
+        st.download_button(
+            label="Baixar Playback",
+            data=st.session_state.music_buffer,
+            file_name="playback_separado.mp3",
+            mime="audio/mp3"
+        )
+
+    # Botão 3: ZIP (Tudo junto)
+    with col3:
+        st.subheader("📦 Pacote")
+        
+        # Cria o ZIP na memória
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, false) as zf:
+            zf.writestr("voz.mp3", st.session_state.vocals_buffer)
+            zf.writestr("playback.mp3", st.session_state.music_buffer)
+        
+        st.write("Baixar tudo de uma vez:")
+        st.download_button(
+            label="Baixar ZIP",
+            data=zip_buffer.getvalue(),
+            file_name="arquivos_separados.zip",
+            mime="application/zip"
+        )
+    
+    # Botão para limpar e começar de novo
+    if st.button("Começar novo processo"):
+        st.session_state.processed = False
+        st.session_state.vocals_buffer = None
+        st.session_state.music_buffer = None
+        st.rerun()
