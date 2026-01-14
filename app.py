@@ -4,6 +4,18 @@ import os
 import tempfile
 import gc
 from pydub import AudioSegment
+import shutil
+from io import BytesIO
+
+# --- CORREÇÃO DO Pydub ---
+# Força o Pydub a encontrar os executáveis do sistema
+path_to_ffmpeg = shutil.which("ffmpeg") 
+path_to_ffprobe = shutil.which("ffprobe")
+
+if path_to_ffmpeg:
+    AudioSegment.converter = path_to_ffmpeg
+if path_to_ffprobe:
+    AudioSegment.ffprobe = path_to_ffprobe
 
 st.set_page_config(page_title="Separador de Áudio", layout="centered")
 
@@ -63,18 +75,22 @@ if uploaded_file is not None:
                         chunk_filename = f"chunk_{i}.mp3"
                         chunk_path = os.path.join(master_temp_dir, chunk_filename)
                         
-                        # Exporta o pedaço para o disco para o Spleeter ler
+                        # Exporta o pedaço para o disco
                         chunk.export(chunk_path, format="mp3")
                         
                         # 2. Roda o Spleeter neste pedaço
-                        # Nota: O Spleeter cria uma pasta com o nome do arquivo (sem extensão)
-                        separator.separate_to_file(
-                            chunk_path, 
-                            master_temp_dir, 
-                            codec='mp3', 
-                            bitrate='128k'
-                        )
-                        
+                        try:
+                            separator.separate_to_file(
+                                chunk_path, 
+                                master_temp_dir, 
+                                codec='mp3', 
+                                bitrate='128k'
+                            )
+                        except Exception as sep_error:
+                            # Se der erro em um pedaço, tenta pular ou avisa
+                            print(f"Erro no chunk {i}: {sep_error}")
+                            continue
+
                         # 3. Recupera os arquivos gerados
                         chunk_folder_name = f"chunk_{i}"
                         output_path = os.path.join(master_temp_dir, chunk_folder_name)
@@ -82,8 +98,7 @@ if uploaded_file is not None:
                         vocals_chunk_path = os.path.join(output_path, "vocals.mp3")
                         music_chunk_path = os.path.join(output_path, "accompaniment.mp3")
                         
-                        # 4. Carrega os resultados de volta para o Pydub e adiciona à lista final
-                        # Usamos crossfade=0 para colar seco, ou um valor pequeno se quiser suavizar
+                        # 4. Carrega os resultados de volta e adiciona à lista final
                         if os.path.exists(vocals_chunk_path):
                             seg_v = AudioSegment.from_mp3(vocals_chunk_path)
                             combined_vocals += seg_v
@@ -91,25 +106,10 @@ if uploaded_file is not None:
                         if os.path.exists(music_chunk_path):
                             seg_m = AudioSegment.from_mp3(music_chunk_path)
                             combined_music += seg_m
-                            
-                        # Limpeza extra de arquivos já usados para não lotar o disco
-                        try:
-                            # Opcional: deletar os arquivos mp3 parciais se o disco estiver muito cheio
-                            pass 
-                        except:
-                            pass
-
+                
                 # Finalização
                 progress_bar.progress(90)
                 status_text.text("Unindo as partes finais...")
-                
-                # Exporta os arquivos finais para download
-                # Precisamos salvar em buffer ou arquivo temporário para o botão de download ler
-                
-                # Cria arquivos finais em outro temp ou na memória
-                final_vocals_path = os.path.join(master_temp_dir, "final_vocals.mp3") # Esse path vai falhar pq o dir fecha
-                # Vamos usar buffers de bytes para download direto
-                from io import BytesIO
                 
                 buffer_voz = BytesIO()
                 combined_vocals.export(buffer_voz, format="mp3", bitrate="192k")
@@ -143,7 +143,7 @@ if uploaded_file is not None:
 
         except Exception as e:
             st.error(f"Erro crítico: {e}")
-            st.warning("Se o erro for de memória, tente diminuir o tamanho do pedaço para 30s.")
+            st.warning("Dica: Verifique se o arquivo packages.txt contém 'ffmpeg' no GitHub.")
             
         finally:
             gc.collect()
