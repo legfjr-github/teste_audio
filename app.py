@@ -109,4 +109,41 @@ if uploaded_file is not None:
                 # Cria arquivos finais em outro temp ou na memória
                 final_vocals_path = os.path.join(master_temp_dir, "final_vocals.mp3") # Esse path vai falhar pq o dir fecha
                 # Vamos usar buffers de bytes para download direto
-                from io import BytesI
+                from io import BytesIO
+                
+                buffer_voz = BytesIO()
+                combined_vocals.export(buffer_voz, format="mp3", bitrate="192k")
+                
+                buffer_music = BytesIO()
+                combined_music.export(buffer_music, format="mp3", bitrate="192k")
+                
+                progress_bar.progress(100)
+                status_text.text("Processamento concluído!")
+                
+                st.write("---")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.subheader("🎤 Voz Completa")
+                    st.download_button(
+                        label="Baixar Voz",
+                        data=buffer_voz.getvalue(),
+                        file_name="voz_completa.mp3",
+                        mime="audio/mp3"
+                    )
+                    
+                with col2:
+                    st.subheader("🎸 Música Completa")
+                    st.download_button(
+                        label="Baixar Playback",
+                        data=buffer_music.getvalue(),
+                        file_name="playback_completo.mp3",
+                        mime="audio/mp3"
+                    )
+
+        except Exception as e:
+            st.error(f"Erro crítico: {e}")
+            st.warning("Se o erro for de memória, tente diminuir o tamanho do pedaço para 30s.")
+            
+        finally:
+            gc.collect()
