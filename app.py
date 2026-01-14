@@ -2,20 +2,22 @@ import streamlit as st
 from spleeter.separator import Separator
 import os
 import tempfile
-import gc 
+import gc
+from pydub import AudioSegment
 
 st.set_page_config(page_title="Separador de Áudio", layout="centered")
 
-st.title("Separador de Áudio IA (Versão Leve) 🎵")
-st.write("Faça upload de uma música para separar voz e instrumentos.")
+st.title("Separador de Áudio (Modo Segmentado) ✂️")
+st.write("Processa músicas longas cortando em pedaços para economizar memória.")
 
+# Configurações
 st.sidebar.header("Configurações")
-duracao_max = st.sidebar.slider("Limitar duração (segundos)", 30, 300, 60, help="Diminua se o app travar.")
-stems = st.sidebar.selectbox("Tipo de separação", ["2 stems (Voz + Música)"]) 
+stems = st.sidebar.selectbox("Tipo de separação", ["2 stems (Voz + Música)"])
+chunk_len_sec = st.sidebar.slider("Tamanho do pedaço (seg)", 30, 60, 60, help="60s é o ideal. Se travar, diminua.")
 
 @st.cache_resource
 def load_separator():
-    # multiprocess=False é crucial para não estourar a memória
+    # multiprocess=False continua sendo essencial
     return Separator('spleeter:2stems', multiprocess=False)
 
 try:
@@ -27,70 +29,84 @@ except Exception as e:
 uploaded_file = st.file_uploader("Escolha um arquivo mp3/wav/m4a", type=["mp3", "wav", "m4a"])
 
 if uploaded_file is not None:
-    if st.button("Separar Áudio"):
+    if st.button("Separar Áudio Completo"):
         progress_bar = st.progress(0)
         status_text = st.empty()
         
         try:
-            with st.spinner('Processando...'):
-                gc.collect() # Limpa memória
+            with st.spinner('Lendo arquivo original...'):
+                # Carrega o áudio completo usando Pydub
+                original_audio = AudioSegment.from_file(uploaded_file)
+                
+                # Calcula quantos pedaços teremos
+                chunk_length_ms = chunk_len_sec * 1000
+                chunks = [original_audio[i:i + chunk_length_ms] for i in range(0, len(original_audio), chunk_length_ms)]
+                total_chunks = len(chunks)
+                
+                status_text.text(f"Áudio dividido em {total_chunks} partes. Iniciando processamento...")
+                
+                # Listas para guardar os pedaços processados
+                combined_vocals = AudioSegment.empty()
+                combined_music = AudioSegment.empty()
 
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    # --- MUDANÇA AQUI ---
-                    # Damos um nome fixo com extensão .mp3 para evitar conflito de pasta
-                    input_filename = "song.mp3"
-                    temp_audio_path = os.path.join(temp_dir, input_filename)
+                # Diretório temporário mestre
+                with tempfile.TemporaryDirectory() as master_temp_dir:
                     
-                    # Salva o arquivo
-                    with open(temp_audio_path, "wb") as f:
-                        f.write(uploaded_file.getbuffer())
-                    
-                    status_text.text("Separando faixas...")
-                    progress_bar.progress(30)
-                    
-                    # Executa a separação
-                    separator.separate_to_file(
-                        temp_audio_path, 
-                        temp_dir, 
-                        codec='mp3', 
-                        bitrate='128k',
-                        duration=duracao_max
-                    )
-                    
-                    progress_bar.progress(80)
-                    status_text.text("Finalizando...")
+                    for i, chunk in enumerate(chunks):
+                        gc.collect() # Limpa memória antes de cada loop
+                        
+                        step_percent = int((i / total_chunks) * 100)
+                        progress_bar.progress(step_percent)
+                        status_text.text(f"Processando parte {i+1} de {total_chunks}...")
 
-                    # --- AJUSTE NOS CAMINHOS ---
-                    # O Spleeter cria uma pasta com o nome do arquivo (sem extensão)
-                    # Como o arquivo chama "song.mp3", a pasta será "song"
-                    output_folder = os.path.join(temp_dir, "song")
-                    
-                    path_vocals = os.path.join(output_folder, "vocals.mp3")
-                    path_music = os.path.join(output_folder, "accompaniment.mp3")
+                        # 1. Salva o pedaço atual num arquivo temporário
+                        chunk_filename = f"chunk_{i}.mp3"
+                        chunk_path = os.path.join(master_temp_dir, chunk_filename)
+                        
+                        # Exporta o pedaço para o disco para o Spleeter ler
+                        chunk.export(chunk_path, format="mp3")
+                        
+                        # 2. Roda o Spleeter neste pedaço
+                        # Nota: O Spleeter cria uma pasta com o nome do arquivo (sem extensão)
+                        separator.separate_to_file(
+                            chunk_path, 
+                            master_temp_dir, 
+                            codec='mp3', 
+                            bitrate='128k'
+                        )
+                        
+                        # 3. Recupera os arquivos gerados
+                        chunk_folder_name = f"chunk_{i}"
+                        output_path = os.path.join(master_temp_dir, chunk_folder_name)
+                        
+                        vocals_chunk_path = os.path.join(output_path, "vocals.mp3")
+                        music_chunk_path = os.path.join(output_path, "accompaniment.mp3")
+                        
+                        # 4. Carrega os resultados de volta para o Pydub e adiciona à lista final
+                        # Usamos crossfade=0 para colar seco, ou um valor pequeno se quiser suavizar
+                        if os.path.exists(vocals_chunk_path):
+                            seg_v = AudioSegment.from_mp3(vocals_chunk_path)
+                            combined_vocals += seg_v
+                        
+                        if os.path.exists(music_chunk_path):
+                            seg_m = AudioSegment.from_mp3(music_chunk_path)
+                            combined_music += seg_m
+                            
+                        # Limpeza extra de arquivos já usados para não lotar o disco
+                        try:
+                            # Opcional: deletar os arquivos mp3 parciais se o disco estiver muito cheio
+                            pass 
+                        except:
+                            pass
 
-                    st.write("---")
-                    col1, col2 = st.columns(2)
-                    
-                    # Verifica e exibe
-                    if os.path.exists(path_vocals):
-                        with col1:
-                            st.subheader("🎤 Voz")
-                            st.audio(path_vocals)
-                            with open(path_vocals, "rb") as f:
-                                st.download_button("Baixar Voz", f, file_name="voz.mp3")
-                    
-                    if os.path.exists(path_music):
-                        with col2:
-                            st.subheader("🎸 Música")
-                            st.audio(path_music)
-                            with open(path_music, "rb") as f:
-                                st.download_button("Baixar Playback", f, file_name="playback.mp3")
-                    
-                    progress_bar.progress(100)
-                    st.success("Sucesso!")
-                    
-        except Exception as e:
-            st.error(f"Ocorreu um erro: {e}")
-        
-        finally:
-            gc.collect()
+                # Finalização
+                progress_bar.progress(90)
+                status_text.text("Unindo as partes finais...")
+                
+                # Exporta os arquivos finais para download
+                # Precisamos salvar em buffer ou arquivo temporário para o botão de download ler
+                
+                # Cria arquivos finais em outro temp ou na memória
+                final_vocals_path = os.path.join(master_temp_dir, "final_vocals.mp3") # Esse path vai falhar pq o dir fecha
+                # Vamos usar buffers de bytes para download direto
+                from io import BytesI
