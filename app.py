@@ -155,7 +155,7 @@ if st.session_state.processed:
         
         # Cria o ZIP na memória
         zip_buffer = BytesIO()
-        with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, false) as zf:
+        with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zf:
             zf.writestr("voz.mp3", st.session_state.vocals_buffer)
             zf.writestr("playback.mp3", st.session_state.music_buffer)
         
