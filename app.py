@@ -296,7 +296,7 @@ with tab_youtube:
                 fmt_id = next((f['format_id'] for f in formats if f.get('height') == target_height), None)
                 with st.spinner("Baixando..."):
                     try:
-                        v_path = download_yt_content(yt_url, 'video', fmt_id)
+                        # v_path = download_yt_content(yt_url, 'video', fmt_id)
                         v_path = teste(yt_url)
                         st.session_state.path_video_download = v_path
                         st.success("Pronto!")
