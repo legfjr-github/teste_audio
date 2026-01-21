@@ -6,37 +6,38 @@ import gc
 from pydub import AudioSegment, effects
 import shutil
 import zipfile
-import yt_dlp
+from pytubefix import YouTube 
+from pytubefix.cli import on_progress
 
-# --- CONFIGURAÇÃO INICIAL E CAMINHOS ---
+# --- CONFIGURAÇÃO INICIAL ---
 path_to_ffmpeg = shutil.which("ffmpeg") 
 path_to_ffprobe = shutil.which("ffprobe")
 if path_to_ffmpeg: AudioSegment.converter = path_to_ffmpeg
 if path_to_ffprobe: AudioSegment.ffprobe = path_to_ffprobe
 
 st.set_page_config(page_title="Studio AI", layout="centered")
-
 st.title("Studio de Áudio & Vídeo IA 🎥🎵")
 st.write("Baixe vídeos, converta mp3 ou separe voz e instrumentos (IA).")
 
-# --- GERENCIAMENTO DE ESTADO ---
-if 'yt_info' not in st.session_state: st.session_state.yt_info = None
+# --- ESTADO E VARIÁVEIS ---
+if 'yt_object' not in st.session_state: st.session_state.yt_object = None # Guarda o objeto YouTube
 if 'processed' not in st.session_state: st.session_state.processed = False
+
 vars_path = ['path_voz', 'path_music', 'path_zip', 'path_video_download', 'path_audio_download']
 for v in vars_path:
     if v not in st.session_state: st.session_state[v] = None
 
-# --- FUNÇÕES UTILITÁRIAS ---
+# --- FUNÇÕES DE LIMPEZA E UTILITÁRIAS ---
 def limpar_memoria():
     gc.collect()
 
-def resetar_sessao(keep_yt_info=False):
-    keys_to_clear = ['path_voz', 'path_music', 'path_zip', 'path_video_download', 'path_audio_download', 'processed']
+def resetar_sessao(keep_yt=False):
+    keys_to_clear = vars_path + ['processed']
     for key in keys_to_clear:
         if key in st.session_state:
             st.session_state[key] = None
-    if not keep_yt_info:
-        st.session_state.yt_info = None
+    if not keep_yt:
+        st.session_state.yt_object = None
     limpar_memoria()
 
 def ler_arquivo(path):
@@ -61,16 +62,18 @@ chunk_len_sec = st.sidebar.slider("Tamanho do Bloco (seg)", 30, 60, 60)
 crossfade_ms = st.sidebar.slider("Overlap (ms)", 0, 3000, 1000)
 aplicar_norm = st.sidebar.checkbox("Normalizar", value=True)
 
-# --- PROCESSAMENTO IA (FUNÇÃO MANTIDA IGUAL) ---
+# --- PROCESSAMENTO IA (SPLEETER) ---
 def processar_separacao_audio(source_path, status_placeholder, progress_bar):
     try:
         session_temp_dir = tempfile.mkdtemp()
         status_placeholder.text("Lendo áudio...")
-        original_audio = AudioSegment.from_file(source_path)
+        
+        # Converte para wav/mp3 garantido antes de ler, para evitar erros de formato
+        audio_seg = AudioSegment.from_file(source_path)
         
         step_ms = chunk_len_sec * 1000
         chunk_total_ms = step_ms + crossfade_ms
-        starts = range(0, len(original_audio), step_ms)
+        starts = range(0, len(audio_seg), step_ms)
         total_chunks = len(starts)
         
         combined_vocals = AudioSegment.empty()
@@ -79,10 +82,10 @@ def processar_separacao_audio(source_path, status_placeholder, progress_bar):
         for i, start_time in enumerate(starts):
             limpar_memoria()
             progress_bar.progress(int((i / total_chunks) * 80))
-            status_placeholder.text(f"Processando parte {i+1}/{total_chunks}...")
+            status_placeholder.text(f"Processando IA: {i+1}/{total_chunks}...")
 
-            end_time = min(start_time + chunk_total_ms, len(original_audio))
-            chunk = original_audio[start_time:end_time]
+            end_time = min(start_time + chunk_total_ms, len(audio_seg))
+            chunk = audio_seg[start_time:end_time]
             
             chunk_path = os.path.join(session_temp_dir, f"temp_chunk.mp3")
             chunk.export(chunk_path, format="mp3")
@@ -107,7 +110,7 @@ def processar_separacao_audio(source_path, status_placeholder, progress_bar):
                     combined_vocals = combined_vocals.append(seg_v, crossfade=crossfade_ms)
                     combined_music = combined_music.append(seg_m, crossfade=crossfade_ms)
 
-        del original_audio
+        del audio_seg
         limpar_memoria()
 
         status_placeholder.text("Finalizando...")
@@ -139,116 +142,57 @@ def processar_separacao_audio(source_path, status_placeholder, progress_bar):
         limpar_memoria()
         
     except Exception as e:
-        st.error(f"Erro: {e}")
+        st.error(f"Erro no processamento: {e}")
         limpar_memoria()
 
-# --- FUNÇÕES YOUTUBE CORRIGIDAS (AQUI ESTÁ O SEGREDO) ---
-def get_common_ydl_opts():
-    """Opções padrão para evitar bloqueios e exigir user-agent mobile"""
-    return {
-        'quiet': True, 
-        'no_warnings': True,
-        # Força usar cliente Android para evitar bloqueio SABR/Empty File
-        'extractor_args': {'youtube': {'player_client': ['android', 'ios']}},
-        'nocheckcertificate': True,
-    }
+# --- FUNÇÕES YOUTUBE (PYTUBEFIX) ---
+def get_yt_object(url):
+    try:
+        # Pytubefix tenta corrigir o token automaticamente
+        yt = YouTube(url)
+        return yt
+    except Exception as e:
+        return None
 
-def get_yt_info(url):
-    opts = get_common_ydl_opts()
-    opts['format'] = 'best'
+def download_video_pytube(yt, resolution):
+    """Baixa vídeo (MP4)"""
+    temp_dir = tempfile.mkdtemp()
+    # Filtra pelo 'res' (ex: '720p') e garante que tem audio e video (progressive=True) ou adapta
+    # Progressive=True é mais seguro, mas limita a 720p. 
+    # Para 1080p precisaria baixar separado e juntar, vamos simplificar com progressive primeiro.
+    stream = yt.streams.filter(res=resolution, progressive=True, file_extension='mp4').first()
     
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        try:
-            return ydl.extract_info(url, download=False)
-        except Exception as e:
-            return None
-def teste(url):
-    import yt_dlp
-    from concurrent.futures import ThreadPoolExecutor
-    
-    # --- CONFIGURAÇÕES ---
-    # Lista de links das páginas que contêm os vídeos
-    links = [
-        f'{url}',
-    ]
-    
-    MAX_RESOLUTION = 1080  # Valor desejado (1080, 720, 480, etc.)
-    CONCURRENT_DOWNLOADS = 2  # Quantos vídeos baixar ao mesmo tempo
-    
-    def download_video(url):
-        """
-        Função para baixar um único vídeo com as restrições dadas.
-        """
-        filename = ''
-        ydl_opts = {
-            # 'format': Seleciona o melhor vídeo que tenha altura <= MAX_RESOLUTION
-            # e junta com o melhor áudio disponível.
-            'format': f'bestvideo[height<={MAX_RESOLUTION}]+bestaudio/best[height<={MAX_RESOLUTION}]',
-    
-            # Pasta de destino e nome do arquivo (Título.Extensão)
-            'outtmpl': '%(title)s.%(ext)s',
-    
-            # Otimizações extras
-            'quiet': False,
-            'no_warnings': True,
-            'merge_output_format': 'mp4', # Garante que o arquivo final seja .mp4
-        }
-    
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                print(f"[INICIANDO] {url}")
-                filename = ydl.prepare_filename(info)
-                ydl.download([url])
-                print(f"[CONCLUÍDO] {url}")
-        except Exception as e:
-            print(f"[ERRO] Falha ao baixar {url}: {e}")
-        return filename
-    
-    
-    print(f"Iniciando downloads (Máximo {CONCURRENT_DOWNLOADS} simultâneos)...")
+    if not stream:
+        # Fallback: Tenta qualquer stream com essa resolução ou a maior possível
+        stream = yt.streams.get_by_resolution(resolution)
+        if not stream:
+            stream = yt.streams.get_highest_resolution()
+            
+    filename = stream.download(output_path=temp_dir)
+    return filename
 
-    # Gerencia a fila de downloads com multithreading
-    with ThreadPoolExecutor(max_workers=CONCURRENT_DOWNLOADS) as executor:
-        executor.map(download_video, links)
-
-    print("\nProcesso finalizado!")
-
-def download_yt_content(url, mode, format_id=None):
+def download_audio_pytube(yt, for_ai=False):
+    """Baixa apenas áudio e converte para MP3"""
     temp_dir = tempfile.mkdtemp()
     
-    # Pega as opções anti-bloqueio
-    ydl_opts = get_common_ydl_opts()
+    # Baixa o stream apenas de áudio (geralmente mp4/m4a ou webm)
+    stream = yt.streams.get_audio_only()
+    downloaded_file = stream.download(output_path=temp_dir)
     
-    # Define o template de saída
-    ydl_opts['outtmpl'] = os.path.join(temp_dir, '%(title)s.%(ext)s')
-
-    if mode == 'audio_only' or mode == 'for_spleeter':
-        ydl_opts['format'] = 'bestaudio/best'
-        ydl_opts['postprocessors'] = [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }]
-    elif mode == 'video':
-        if format_id:
-             ydl_opts['format'] = f"{format_id}+bestaudio/best"
-        else:
-             ydl_opts['format'] = "bestvideo+bestaudio/best"
-        # Garante que saia como mp4 para compatibilidade
-        ydl_opts['merge_output_format'] = 'mp4' 
+    # Converte para MP3 usando Pydub (mais compatível que o arquivo cru)
+    base, _ = os.path.splitext(downloaded_file)
+    mp3_filename = base + ".mp3"
     
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        filename = ydl.prepare_filename(info)
-        
-        if mode == 'audio_only' or mode == 'for_spleeter':
-            filename = os.path.splitext(filename)[0] + ".mp3"
-        elif mode == 'video':
-            # Se for vídeo, garante que pegamos o arquivo merged (.mp4)
-            base, _ = os.path.splitext(filename)
-            filename = base + ".mp4"
-            
-        return filename
+    # Conversão
+    audio = AudioSegment.from_file(downloaded_file)
+    audio.export(mp3_filename, format="mp3", bitrate="192k")
+    
+    # Remove o arquivo original (m4a/webm) para economizar espaço
+    try:
+        os.remove(downloaded_file)
+    except: pass
+    
+    return mp3_filename
 
 # ================= INTERFACE =================
 
@@ -268,67 +212,80 @@ with tab_upload:
 
 with tab_youtube:
     yt_url = st.text_input("Link do YouTube:")
+    
     if st.button("🔍 Analisar"):
         if yt_url:
-            with st.spinner("Buscando..."):
-                info = get_yt_info(yt_url)
-                if info:
-                    st.session_state.yt_info = info
-                    resetar_sessao(keep_yt_info=True)
+            with st.spinner("Conectando ao YouTube..."):
+                yt = get_yt_object(yt_url)
+                if yt:
+                    try:
+                        # Força checar se o título existe para validar o link (dispara o erro 403 aqui se der)
+                        title = yt.title 
+                        st.session_state.yt_object = yt
+                        resetar_sessao(keep_yt=True)
+                    except Exception as e:
+                        st.error(f"Erro ao acessar vídeo (Bloqueio ou link inválido): {e}")
                 else:
-                    st.error("Erro ao buscar vídeo. Tente outro link.")
+                    st.error("Link inválido.")
     
-    if st.session_state.yt_info:
-        info = st.session_state.yt_info
-        st.subheader(info.get('title'))
-        st.image(info.get('thumbnail'), width=300)
-        
-        action = st.radio("Ação:", ["Baixar Áudio", "Baixar Vídeo", "Separar Voz/Playback (IA)"])
-        
-        if action == "Baixar Vídeo":
-            formats = [f for f in info['formats'] if f.get('vcodec') != 'none']
-            resolutions = sorted(list(set([f.get('height') for f in formats if f.get('height')])), reverse=True)
-            res_options = [f"{r}p" for r in resolutions if r]
-            selected_res = st.selectbox("Resolução:", res_options)
+    # Se já temos o objeto YT carregado
+    if st.session_state.yt_object:
+        yt = st.session_state.yt_object
+        try:
+            st.subheader(yt.title)
+            st.image(yt.thumbnail_url, width=300)
             
-            if st.button("⬇️ Baixar Vídeo"):
-                target_height = int(selected_res.replace('p', ''))
-                fmt_id = next((f['format_id'] for f in formats if f.get('height') == target_height), None)
-                with st.spinner("Baixando..."):
-                    try:
-                        # v_path = download_yt_content(yt_url, 'video', fmt_id)
-                        v_path = teste(yt_url)
-                        st.session_state.path_video_download = v_path
-                        st.success("Pronto!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Erro: {e}")
+            action = st.radio("Ação:", ["Baixar Áudio (MP3)", "Baixar Vídeo (MP4)", "Separar Voz/Playback (IA)"])
+            
+            if action == "Baixar Vídeo (MP4)":
+                # Lista resoluções disponíveis (streams progressivos para evitar erro de ffmpeg merge)
+                streams = yt.streams.filter(progressive=True, file_extension='mp4')
+                res_options = sorted(list(set([s.resolution for s in streams if s.resolution])), reverse=True)
+                
+                if not res_options:
+                    res_options = ["720p (Padrão)"] # Fallback
+                
+                selected_res = st.selectbox("Resolução:", res_options)
+                
+                if st.button("⬇️ Baixar Vídeo"):
+                    with st.spinner("Baixando..."):
+                        try:
+                            v_path = download_video_pytube(yt, selected_res)
+                            st.session_state.path_video_download = v_path
+                            st.success("Vídeo pronto!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro download: {e}")
 
-        elif action == "Baixar Áudio":
-            if st.button("⬇️ Baixar MP3"):
-                with st.spinner("Baixando..."):
-                    try:
-                        a_path = download_yt_content(yt_url, 'audio_only')
-                        st.session_state.path_audio_download = a_path
-                        st.success("Pronto!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Erro: {e}")
+            elif action == "Baixar Áudio (MP3)":
+                if st.button("⬇️ Baixar MP3"):
+                    with st.spinner("Baixando e convertendo..."):
+                        try:
+                            a_path = download_audio_pytube(yt)
+                            st.session_state.path_audio_download = a_path
+                            st.success("Áudio pronto!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro download: {e}")
 
-        elif action == "Separar Voz/Playback (IA)":
-            if st.button("🚀 Iniciar IA"):
-                with st.spinner("Baixando e Processando..."):
-                    try:
-                        temp_audio_path = download_yt_content(yt_url, 'for_spleeter')
-                        prog_bar = st.progress(0)
-                        status_txt = st.empty()
-                        processar_separacao_audio(temp_audio_path, status_txt, prog_bar)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Erro: {e}")
+            elif action == "Separar Voz/Playback (IA)":
+                if st.button("🚀 Iniciar IA"):
+                    with st.spinner("Baixando áudio para processamento..."):
+                        try:
+                            temp_audio_path = download_audio_pytube(yt, for_ai=True)
+                            prog_bar = st.progress(0)
+                            status_txt = st.empty()
+                            processar_separacao_audio(temp_audio_path, status_txt, prog_bar)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro: {e}")
+        except Exception as e:
+            st.error("Sessão do YouTube expirou. Analise o link novamente.")
+            st.session_state.yt_object = None
 
-# ================= DOWNLOADS =================
+# ================= ÁREA DE DOWNLOADS =================
 st.write("---")
+
 if st.session_state.processed:
     st.subheader("🎵 IA Resultados")
     c1, c2, c3 = st.columns(3)
@@ -343,7 +300,7 @@ if st.session_state.path_video_download:
     path = st.session_state.path_video_download
     try:
         st.video(path)
-        st.download_button("💾 Salvar", ler_arquivo(path), os.path.basename(path), "video/mp4")
+        st.download_button("💾 Salvar Vídeo", ler_arquivo(path), os.path.basename(path), "video/mp4")
     except: pass
 
 if st.session_state.path_audio_download:
@@ -351,7 +308,7 @@ if st.session_state.path_audio_download:
     path = st.session_state.path_audio_download
     try:
         st.audio(path)
-        st.download_button("💾 Salvar", ler_arquivo(path), os.path.basename(path), "audio/mp3")
+        st.download_button("💾 Salvar MP3", ler_arquivo(path), os.path.basename(path), "audio/mp3")
     except: pass
 
 if st.button("🧹 Limpar Tudo"):
