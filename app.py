@@ -204,14 +204,14 @@ def teste(url):
             print(f"[ERRO] Falha ao baixar {url}: {e}")
         return filename
     
-    def main():
-        print(f"Iniciando downloads (Máximo {CONCURRENT_DOWNLOADS} simultâneos)...")
     
-        # Gerencia a fila de downloads com multithreading
-        with ThreadPoolExecutor(max_workers=CONCURRENT_DOWNLOADS) as executor:
-            executor.map(download_video, links)
-    
-        print("\nProcesso finalizado!")
+    print(f"Iniciando downloads (Máximo {CONCURRENT_DOWNLOADS} simultâneos)...")
+
+    # Gerencia a fila de downloads com multithreading
+    with ThreadPoolExecutor(max_workers=CONCURRENT_DOWNLOADS) as executor:
+        executor.map(download_video, links)
+
+    print("\nProcesso finalizado!")
 
 def download_yt_content(url, mode, format_id=None):
     temp_dir = tempfile.mkdtemp()
