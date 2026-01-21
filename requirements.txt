@@ -5,3 +5,4 @@ numpy<2.0.0
 ffmpeg-python
 protobuf==3.20.3
 pydub
+yt-dlp
