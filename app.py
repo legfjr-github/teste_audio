@@ -162,6 +162,56 @@ def get_yt_info(url):
             return ydl.extract_info(url, download=False)
         except Exception as e:
             return None
+def teste(url):
+    import yt_dlp
+    from concurrent.futures import ThreadPoolExecutor
+    
+    # --- CONFIGURAÇÕES ---
+    # Lista de links das páginas que contêm os vídeos
+    links = [
+        f'{url}',
+    ]
+    
+    MAX_RESOLUTION = 1080  # Valor desejado (1080, 720, 480, etc.)
+    CONCURRENT_DOWNLOADS = 2  # Quantos vídeos baixar ao mesmo tempo
+    
+    def download_video(url):
+        """
+        Função para baixar um único vídeo com as restrições dadas.
+        """
+        filename = ''
+        ydl_opts = {
+            # 'format': Seleciona o melhor vídeo que tenha altura <= MAX_RESOLUTION
+            # e junta com o melhor áudio disponível.
+            'format': f'bestvideo[height<={MAX_RESOLUTION}]+bestaudio/best[height<={MAX_RESOLUTION}]',
+    
+            # Pasta de destino e nome do arquivo (Título.Extensão)
+            'outtmpl': '%(title)s.%(ext)s',
+    
+            # Otimizações extras
+            'quiet': False,
+            'no_warnings': True,
+            'merge_output_format': 'mp4', # Garante que o arquivo final seja .mp4
+        }
+    
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                print(f"[INICIANDO] {url}")
+                filename = ydl.prepare_filename(info)
+                ydl.download([url])
+                print(f"[CONCLUÍDO] {url}")
+        except Exception as e:
+            print(f"[ERRO] Falha ao baixar {url}: {e}")
+        return filename
+    
+    def main():
+        print(f"Iniciando downloads (Máximo {CONCURRENT_DOWNLOADS} simultâneos)...")
+    
+        # Gerencia a fila de downloads com multithreading
+        with ThreadPoolExecutor(max_workers=CONCURRENT_DOWNLOADS) as executor:
+            executor.map(download_video, links)
+    
+        print("\nProcesso finalizado!")
 
 def download_yt_content(url, mode, format_id=None):
     temp_dir = tempfile.mkdtemp()
@@ -247,6 +297,7 @@ with tab_youtube:
                 with st.spinner("Baixando..."):
                     try:
                         v_path = download_yt_content(yt_url, 'video', fmt_id)
+                        v_path = teste(yt_url)
                         st.session_state.path_video_download = v_path
                         st.success("Pronto!")
                         st.rerun()
